@@ -1,0 +1,219 @@
+---
+title: "Projeto AE"
+author: "Diogo Rodrigues"
+date: "2023-12-13"
+output: html_document
+---
+# Bibliotecas
+```{r}
+library(moments)
+library(dplyr)
+library(plyr)
+library(MASS)
+library(DescTools)
+library(ggcorrplot)
+library(ISLR)
+library(ggplot2)
+library(rminer)
+library(caret)
+library(fpp)
+library(forecast)
+library(ISLR2)
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(stats)
+```
+
+# Dados
+```{r}
+VinhoBranco = read.csv("Vinho Tinto.csv", header = T, sep = ";")
+VinhoTinto = read.csv("Vinho Branco.csv", header = T, sep = ";")
+```
+
+# Funções Genéricas
+```{r}
+dataframe_macro_analysis <- function(dataframe){
+  dataframe <- as.data.frame(dataframe)
+  cat("1) O dataframe tem", dim(dataframe)[1], "linhas e", dim(dataframe)[2], "colunas","\n") 
+  cat("2) O dataframe tem a seguinte estrutura:","\n"); str(dataframe) 
+  cat("3) O dataframe contempla as seguintes variáveis:","\n"); names(dataframe)
+}
+
+confirm_duplicated <- function(df){
+  x <- sum(duplicated(df))
+  if (x > 0){
+    print("This dataFrame has duplicate data!")
+  }else{
+    print("This dataFrame doens´t have duplicate data!")
+  }
+}
+
+remove_duplicated <- function(df){
+  sem_dup <- df[!duplicated(df),]
+  return(sem_dup)
+}
+
+confirm_NA <- function(df) {
+  num_NA <- sum(is.na(df))
+  if (num_NA > 0) {
+    print("This dataFrame has missing data (NA)!")
+  }else{
+    print("This dataFrame doesn´t have missing data (NA)!")
+  }
+}
+
+df_summary <- function(df) {
+  df <- as.data.frame(df)
+
+  num_vars <- sapply(df, function(x) is.numeric(x) || is.integer(x))
+
+  cat_vars <- sapply(df, function(x) is.factor(x) || is.ordered(x) ||
+is.character(x) || is.logical(x))
+
+  num_stats <- lapply(df[,num_vars], function(x) {
+    stats <- c(mean = mean(x, na.rm = TRUE),
+    sd = sd(x, na.rm = TRUE),
+    max = max(x, na.rm = TRUE),
+    min = min(x, na.rm = TRUE),
+    median = median(x, na.rm = TRUE),
+    assimetria = skewness(x, na.rm = TRUE),
+    Curtose = kurtosis(x, na.rm = TRUE),
+    missing_prop = mean(is.na(x)))
+  })
+
+  cat_stats <- lapply(df[,cat_vars], function(x) {
+    missing_prop <- mean(is.na(x))
+    mode <- names(sort(table(x), decreasing = TRUE))[1]
+    freq_table <- as.data.frame(table(x))
+    names(freq_table) <- c("value", "frequency")
+    freq_table <- freq_table[order(freq_table$frequency, decreasing = TRUE), ]
+    data.frame(mode = mode, freq_table, prop_missing = missing_prop)
+  })
+
+  num_table <- as.data.frame(do.call(rbind, num_stats))
+
+  rownames(num_table) <- gsub("_var", "", names(df)[num_vars])
+  colnames(num_table) <- c("mean", "sd", "max", "min", "median","Assimetria", "Curtose", "missing_prop")
+
+  cat_tables <- lapply(cat_stats, function(x) {
+    mode <- x$mode[1]
+    freq_table <- subset(x, select = -mode)
+    data.frame(mode = mode, freq_table)
+  })
+
+  names(cat_tables) <- names(df)[cat_vars]
+
+  return(list(numeric_table = num_table, categorical_tables = cat_tables))
+}
+
+detect_outliers_hampelIdentifier_numeric <- function(df) {
+  data <- data.frame(df)
+  x <- data %>% select_if(is.numeric) %>% pull()
+  
+  med = median(x)
+  madm = mad(x)
+  
+  outliers_idx = which(abs(x - med) > 3*madm)
+  
+  cat("Indicie das Observações atípicas: ", names(outliers_idx), "\n")
+  cat("Observações atípicas: ", x[outliers_idx])
+}
+```
+
+
+# Análise Exploratória de Dados
+```{r}
+dataframe_macro_analysis(VinhoTinto)
+dataframe_macro_analysis(VinhoBranco)
+
+confirm_duplicated(VinhoBranco)
+confirm_duplicated(VinhoTinto)
+
+VinhoBranco_rd <- remove_duplicated(VinhoBranco)
+VinhoTinto_rd <- remove_duplicated(VinhoTinto)
+
+confirm_duplicated(VinhoBranco_rd)
+confirm_duplicated(VinhoTinto_rd)
+
+confirm_NA(VinhoBranco_rd)
+confirm_NA(VinhoTinto_rd)
+
+df_summary(VinhoBranco_rd)
+df_summary(VinhoTinto_rd)
+
+detect_outliers_hampelIdentifier_numeric(VinhoBranco_rd)
+detect_outliers_hampelIdentifier_numeric(VinhoTinto_rd)
+```
+
+# Modelação Supervisionada
+```{r}
+indices_Branco <- holdout(1 : nrow(VinhoBranco_rd),
+                          ratio = 25,
+                          mode = "incremental",
+                          increment = 20,
+                          iter = 5)
+
+
+cor(VinhoBranco_rd)
+
+pairs(VinhoBranco_rd,
+      lower.panel = NULL)
+
+
+modelo.fit <- lm(quality ~ alcohol + sulphates + density,
+                 data = VinhoBranco_rd[indices_Branco$tr, ])
+
+quality.prev <- as.numeric(predict(modelo.fit,
+                                   VinhoBranco_rd[indices_Branco$ts, ]))
+
+quality_real <- as.numeric(VinhoBranco_rd[indices_Branco$ts, ]$quality)
+
+erro <- mean(abs(quality.prev - quality_real))
+```
+
+
+# Modelação Não Supervisionada
+```{r}
+sd.Tinto <- scale(VinhoTinto_rd,
+                 center = T,
+                 scale = T)
+
+
+wcss <- numeric(length = 15)
+
+for (i in 1:15) {
+  kmeans_model <- kmeans(sd.Tinto, centers = i, nstart = 10)
+  wcss[i] <- kmeans_model$tot.withinss
+}
+
+plot(1:15, wcss, type = "b", main = "Método do Cotovelo", xlab = "Número de Clusters (k)", ylab = "WCSS")
+abline(v = which.min(wcss), col = "red", lty = 2)
+
+
+sil_values <- numeric(length = 10)
+
+for (i in 2:10) {
+  kmeans_model <- kmeans(sd.Tinto, centers = i, nstart = 10)
+  diss <- dist(sd.Tinto)
+  sil_values[i] <- silhouette(kmeans_model$cluster, diss)
+}
+
+plot(2:10, sil_values[2:10], type = "b", main = "Método da Silhueta", xlab = "Número de Clusters (k)", ylab = "Silhueta Média")
+
+kmeans.model_final <- kmeans(sd.Tinto, centers = 3, nstart = 10)
+
+fviz_cluster(kmeans.model_final, data = sd.Tinto)
+
+cluster = kmeans.model_final$cluster
+
+tinto_with_cluster <- data.frame(sd.Tinto, cluster = cluster)
+
+result <- tinto_with_cluster %>%
+  group_by(cluster) %>%
+  summarise_all("mean")
+```
+
+
+
+
